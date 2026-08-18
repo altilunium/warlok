@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>OSM Data Analyzer</title>
+    <title>Warlok</title>
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
     <style>
         * { box-sizing: border-box; }
@@ -26,11 +26,17 @@
         .clickable-count { color: #007bff; text-decoration: underline; cursor: pointer; font-weight: bold; }
         
         .modal-overlay { display: none; position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; background: rgba(0, 0, 0, 0.5); justify-content: center; align-items: center; z-index: 9999; }
-        .modal-content { background: #fff; padding: 20px; border-radius: 8px; width: 380px; max-height: 80vh; overflow-y: auto; box-shadow: 0 4px 10px rgba(0,0,0,0.3); }
+        .modal-content { background: #fff; padding: 20px; border-radius: 8px; width: 420px; max-height: 80vh; overflow-y: auto; box-shadow: 0 4px 10px rgba(0,0,0,0.3); }
         .modal-header { display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid #ccc; padding-bottom: 10px; margin-bottom: 10px; }
-        .modal-header h3 { margin: 0; font-size: 1.1em; }
-        .close-btn { font-weight: bold; cursor: pointer; color: #888; font-size: 1.4em; line-height: 1; }
+        .modal-header h3 { margin: 0; font-size: 1.05em; display: flex; align-items: center; }
+        .close-btn { font-weight: bold; cursor: pointer; color: #888; font-size: 1.4em; line-height: 1; margin-left: 10px; }
         .close-btn:hover { color: #000; }
+
+        .osm-link-grid { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+        .osm-obj-link { display: inline-block; padding: 4px 8px; background: #e7f3ff; border: 1px solid #b6d4fe; border-radius: 4px; color: #0d6efd; text-decoration: none; font-family: monospace; font-size: 0.9em; font-weight: bold; }
+        .osm-obj-link:hover { background: #0d6efd; color: #fff; }
+        .btn-back { background: #e9ecef; border: 1px solid #ced4da; padding: 3px 8px; border-radius: 4px; cursor: pointer; font-size: 0.85em; margin-right: 8px; font-weight: bold; }
+        .btn-back:hover { background: #dee2e6; }
     </style>
 </head>
 <body>
@@ -241,13 +247,21 @@
 
             elements.forEach(el => {
                 if (el.tags) {
+                    const prefix = el.type === 'node' ? 'n' : (el.type === 'way' ? 'w' : 'r');
+                    const label = `${prefix}${el.id}`;
+                    const url = `https://www.openstreetmap.org/${el.type}/${el.id}`;
+                    const objInfo = { type: el.type, id: el.id, label: label, url: url };
+
                     for (let key in el.tags) {
                         const val = el.tags[key];
                         tagCounts[key] = (tagCounts[key] || 0) + 1;
                         if (!tagValueMap[key]) {
                             tagValueMap[key] = {};
                         }
-                        tagValueMap[key][val] = (tagValueMap[key][val] || 0) + 1;
+                        if (!tagValueMap[key][val]) {
+                            tagValueMap[key][val] = [];
+                        }
+                        tagValueMap[key][val].push(objInfo);
                     }
                 }
                 if (el.user) {
@@ -284,7 +298,7 @@
             sortedTags.forEach(row => {
                 const tagKey = row[0];
                 const count = row[1];
-                tableHtml += `<tr><td>${escapeHtml(tagKey)}</td><td><span class="clickable-count" onclick="openValueModal('${escapeHtml(tagKey)}')">${count}</span></td></tr>`;
+                tableHtml += `<tr><td>${escapeHtml(tagKey)}</td><td><span class="clickable-count" onclick="openValueModal('${escapeJsString(tagKey)}')">${count}</span></td></tr>`;
             });
             tableHtml += '</table>';
             tagsContainer.innerHTML += tableHtml;
@@ -307,23 +321,41 @@
 
         function openValueModal(tagKey) {
             const valuesObj = currentTagValueMap[tagKey] || {};
-            const sortedValues = Object.entries(valuesObj).sort((a, b) => b[1] - a[1]);
+            const sortedValues = Object.entries(valuesObj).sort((a, b) => b[1].length - a[1].length);
             
-            modalTitle.textContent = `Values for "${tagKey}"`;
+            modalTitle.innerHTML = `Values for "${escapeHtml(tagKey)}"`;
             modalBody.innerHTML = '';
 
             if (sortedValues.length === 0) {
                 modalBody.innerHTML = '<p class="info">No values found for this tag.</p>';
             } else {
                 let tableHtml = '<table><tr><th>Value</th><th>Count</th></tr>';
-                sortedValues.forEach(([val, count]) => {
-                    tableHtml += `<tr><td>${escapeHtml(val)}</td><td>${count}</td></tr>`;
+                sortedValues.forEach(([val, objList]) => {
+                    tableHtml += `<tr><td>${escapeHtml(val)}</td><td><span class="clickable-count" onclick="showObjectList('${escapeJsString(tagKey)}', '${escapeJsString(val)}')">${objList.length}</span></td></tr>`;
                 });
                 tableHtml += '</table>';
                 modalBody.innerHTML = tableHtml;
             }
 
             modalOverlay.style.display = 'flex';
+        }
+
+        function showObjectList(tagKey, val) {
+            const objList = (currentTagValueMap[tagKey] && currentTagValueMap[tagKey][val]) || [];
+            
+            modalTitle.innerHTML = `<button onclick="openValueModal('${escapeJsString(tagKey)}')" class="btn-back">&larr; Back</button> Objects for ${escapeHtml(tagKey)}=${escapeHtml(val)}`;
+            
+            if (objList.length === 0) {
+                modalBody.innerHTML = '<p class="info">No objects found.</p>';
+                return;
+            }
+
+            let contentHtml = `<p class="info" style="margin-top:0;">Showing ${objList.length} OSM object(s):</p><div class="osm-link-grid">`;
+            objList.forEach(obj => {
+                contentHtml += `<a href="${obj.url}" target="_blank" rel="noopener noreferrer" class="osm-obj-link">${obj.label}</a>`;
+            });
+            contentHtml += '</div>';
+            modalBody.innerHTML = contentHtml;
         }
 
         function escapeHtml(str) {
@@ -333,6 +365,13 @@
                 .replace(/>/g, "&gt;")
                 .replace(/"/g, "&quot;")
                 .replace(/'/g, "&#039;");
+        }
+
+        function escapeJsString(str) {
+            return String(str)
+                .replace(/\\/g, '\\\\')
+                .replace(/'/g, "\\'")
+                .replace(/"/g, '\\"');
         }
 
         closeModalBtn.addEventListener('click', () => { modalOverlay.style.display = 'none'; });
