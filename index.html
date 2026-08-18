@@ -1,0 +1,349 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>OSM Data Analyzer</title>
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+    <style>
+        * { box-sizing: border-box; }
+        html, body { margin: 0; padding: 0; width: 100vw; height: 100vh; overflow: hidden; display: flex; font-family: Arial, sans-serif; }
+        #map { flex: 1; height: 100%; min-width: 0; }
+        #sidebar { width: 360px; height: 100%; padding: 20px; overflow-y: auto; background: #f9f9f9; border-left: 2px solid #ccc; flex-shrink: 0; }
+        .stat-box { margin-bottom: 20px; background: #fff; padding: 15px; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
+        h2 { font-size: 1.2em; margin-top: 0; }
+        table { width: 100%; border-collapse: collapse; }
+        th, td { text-align: left; padding: 8px; border-bottom: 1px solid #ddd; word-break: break-word; }
+        .warning { color: red; font-weight: bold; }
+        .info { color: #555; }
+        .btn-primary { display: block; padding: 10px; width: 100%; background: #007bff; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 1em; margin-top: 10px; }
+        .btn-success { display: block; padding: 10px; width: 100%; background: #28a745; color: white; border: none; border-radius: 4px; cursor: pointer; font-size: 1em; margin-top: 10px; }
+        .btn-primary:disabled, .btn-success:disabled { background: #999; cursor: not-allowed; }
+        #analyze-btn { display: none; }
+        input[type="text"] { width: 100%; padding: 8px; margin-top: 5px; border: 1px solid #ccc; border-radius: 4px; }
+        .uid-badge { display: inline-block; background: #e9ecef; border: 1px solid #ced4da; padding: 4px 8px; border-radius: 4px; font-family: monospace; font-size: 1.1em; font-weight: bold; color: #333; }
+        .king-box { background: #fff3cd; border: 1px solid #ffeeba; color: #856404; padding: 10px; border-radius: 4px; margin-top: 10px; text-align: center; font-size: 1.05em; display: none; }
+        .clickable-count { color: #007bff; text-decoration: underline; cursor: pointer; font-weight: bold; }
+        
+        .modal-overlay { display: none; position: fixed; top: 0; left: 0; width: 100vw; height: 100vh; background: rgba(0, 0, 0, 0.5); justify-content: center; align-items: center; z-index: 9999; }
+        .modal-content { background: #fff; padding: 20px; border-radius: 8px; width: 380px; max-height: 80vh; overflow-y: auto; box-shadow: 0 4px 10px rgba(0,0,0,0.3); }
+        .modal-header { display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid #ccc; padding-bottom: 10px; margin-bottom: 10px; }
+        .modal-header h3 { margin: 0; font-size: 1.1em; }
+        .close-btn { font-weight: bold; cursor: pointer; color: #888; font-size: 1.4em; line-height: 1; }
+        .close-btn:hover { color: #000; }
+    </style>
+</head>
+<body>
+    <div id="map"></div>
+    <div id="sidebar">
+        <div class="stat-box">
+            <h2>Jump to Location</h2>
+            <p class="info" style="margin-bottom: 5px; margin-top: 0;">Paste Lat, Lon OR Universal ID:</p>
+            <input type="text" id="coord-input" placeholder="e.g. -6.2383, 106.9756 or 19-5E16-43BF" />
+            <button id="jump-btn" class="btn-success">Go & Zoom In</button>
+            <p id="jump-error" class="warning" style="display: none; margin-top: 10px;"></p>
+        </div>
+
+        <div class="stat-box">
+            <h2>Analysis Status</h2>
+            <div id="id-display" style="display: none; margin-bottom: 10px;">
+                <span class="info">Universal ID:</span>
+                <span id="id-value" class="uid-badge">---</span>
+            </div>
+            <p id="status-text" class="info">Zoom in to level 18 or higher to allow downloading and analyzing OSM data for the current view.</p>
+            <button id="analyze-btn" class="btn-primary">Analyze Current Area</button>
+            <div id="king-box" class="king-box"></div>
+        </div>
+        
+        <div class="stat-box" id="tags-container">
+            <h2>Most Frequent Tags</h2>
+            <p class="info">Data will appear here after analysis.</p>
+        </div>
+        
+        <div class="stat-box" id="users-container">
+            <h2>Top Contributors</h2>
+            <p class="info">Data will appear here after analysis.</p>
+        </div>
+    </div>
+
+    <div id="modal-overlay" class="modal-overlay">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3 id="modal-title">Tag Values</h3>
+                <span id="close-btn" class="close-btn">&times;</span>
+            </div>
+            <div id="modal-body"></div>
+        </div>
+    </div>
+
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script>
+        const map = L.map('map').setView([-6.2383, 106.9756], 13);
+
+        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+            maxZoom: 19,
+            attribution: '© OpenStreetMap contributors'
+        }).addTo(map);
+
+        const MIN_ZOOM = 18;
+        const statusText = document.getElementById('status-text');
+        const tagsContainer = document.getElementById('tags-container');
+        const usersContainer = document.getElementById('users-container');
+        const analyzeBtn = document.getElementById('analyze-btn');
+        const coordInput = document.getElementById('coord-input');
+        const jumpBtn = document.getElementById('jump-btn');
+        const jumpError = document.getElementById('jump-error');
+        const idDisplay = document.getElementById('id-display');
+        const idValue = document.getElementById('id-value');
+        const kingBox = document.getElementById('king-box');
+        
+        const modalOverlay = document.getElementById('modal-overlay');
+        const modalTitle = document.getElementById('modal-title');
+        const modalBody = document.getElementById('modal-body');
+        const closeModalBtn = document.getElementById('close-btn');
+
+        let isFetching = false;
+        let activeUniversalID = "";
+        let currentTagValueMap = {};
+
+        function latLonToTile(lat, lon, zoom) {
+            const x = Math.floor((lon + 180) / 360 * Math.pow(2, zoom));
+            const latRad = lat * Math.PI / 180;
+            const y = Math.floor((1 - Math.log(Math.tan(latRad) + 1 / Math.cos(latRad)) / Math.PI) / 2 * Math.pow(2, zoom));
+            return { z: zoom, x: x, y: y };
+        }
+
+        function tileToBbox(z, x, y) {
+            const n = Math.pow(2, z);
+            const lonWest = x / n * 360 - 180;
+            const lonEast = (x + 1) / n * 360 - 180;
+            const latRadNorth = Math.atan(Math.sinh(Math.PI * (1 - 2 * y / n)));
+            const latNorth = latRadNorth * 180 / Math.PI;
+            const latRadSouth = Math.atan(Math.sinh(Math.PI * (1 - 2 * (y + 1) / n)));
+            const latSouth = latRadSouth * 180 / Math.PI;
+            return {
+                z: z,
+                centerLat: (latNorth + latSouth) / 2,
+                centerLon: (lonWest + lonEast) / 2,
+                south: latSouth,
+                north: latNorth,
+                west: lonWest,
+                east: lonEast
+            };
+        }
+
+        function getUniversalID(lat, lon, zoom) {
+            const tile = latLonToTile(lat, lon, zoom);
+            const xStr = tile.x.toString(36).toUpperCase();
+            const yStr = tile.y.toString(36).toUpperCase();
+            return `${tile.z}-${xStr}-${yStr}`;
+        }
+
+        function parseUniversalID(idStr) {
+            const parts = idStr.trim().split('-');
+            if (parts.length === 3) {
+                const z = parseInt(parts[0], 10);
+                const x = parseInt(parts[1], 36);
+                const y = parseInt(parts[2], 36);
+                if (!isNaN(z) && !isNaN(x) && !isNaN(y) && z >= 0 && z <= 22) {
+                    return tileToBbox(z, x, y);
+                }
+            }
+            return null;
+        }
+
+        jumpBtn.addEventListener('click', () => {
+            const inputVal = coordInput.value.trim();
+            const parsedID = parseUniversalID(inputVal);
+            if (parsedID) {
+                jumpError.style.display = 'none';
+                map.setView([parsedID.centerLat, parsedID.centerLon], Math.max(parsedID.z, 19));
+                return;
+            }
+
+            const rawCoords = inputVal.split(',');
+            if (rawCoords.length >= 2) {
+                const lat = parseFloat(rawCoords[0].trim());
+                const lon = parseFloat(rawCoords[1].trim());
+                if (!isNaN(lat) && !isNaN(lon) && lat >= -90 && lat <= 90 && lon >= -180 && lon <= 180) {
+                    jumpError.style.display = 'none';
+                    map.setView([lat, lon], 19);
+                    return;
+                }
+            }
+            
+            jumpError.style.display = 'block';
+            jumpError.textContent = "Enter valid coordinates ('lat, lon') or Universal ID ('19-5E16-43BF').";
+        });
+
+        function checkZoomAndAnalyze() {
+            const currentZoom = map.getZoom();
+            const center = map.getCenter();
+            
+            if (currentZoom >= MIN_ZOOM) {
+                activeUniversalID = getUniversalID(center.lat, center.lng, 19);
+                idValue.textContent = activeUniversalID;
+                idDisplay.style.display = "block";
+                statusText.textContent = "Ready to analyze area for Universal ID " + activeUniversalID + ".";
+                statusText.className = "info";
+                analyzeBtn.style.display = "block";
+            } else {
+                activeUniversalID = "";
+                idDisplay.style.display = "none";
+                kingBox.style.display = "none";
+                statusText.textContent = "Please zoom in closer to level " + MIN_ZOOM + " or higher. Current level: " + currentZoom + ".";
+                statusText.className = "warning";
+                analyzeBtn.style.display = "none";
+                clearResults();
+            }
+        }
+
+        function clearResults() {
+            tagsContainer.innerHTML = '<h2>Most Frequent Tags</h2><p class="info">Zoom in closer to analyze.</p>';
+            usersContainer.innerHTML = '<h2>Top Contributors</h2><p class="info">Zoom in closer to analyze.</p>';
+            kingBox.style.display = "none";
+            currentTagValueMap = {};
+        }
+
+        async function fetchData() {
+            if (map.getZoom() < MIN_ZOOM || isFetching) return;
+            
+            isFetching = true;
+            analyzeBtn.textContent = "Downloading and Analyzing...";
+            analyzeBtn.disabled = true;
+
+            const bounds = map.getBounds();
+            const bbox = `${bounds.getWest()},${bounds.getSouth()},${bounds.getEast()},${bounds.getNorth()}`;
+            const url = `https://api.openstreetmap.org/api/0.6/map.json?bbox=${bbox}`;
+
+            try {
+                const response = await fetch(url);
+                if (!response.ok) {
+                    throw new Error("API Limit reached or area too large.");
+                }
+                const data = await response.json();
+                processAnalysis(data.elements);
+                statusText.textContent = "Analysis complete for Universal ID: " + activeUniversalID;
+            } catch (error) {
+                statusText.textContent = "Error fetching data: " + error.message;
+                statusText.className = "warning";
+            } finally {
+                isFetching = false;
+                analyzeBtn.textContent = "Analyze Current Area";
+                analyzeBtn.disabled = false;
+            }
+        }
+
+        function processAnalysis(elements) {
+            const tagCounts = {};
+            const tagValueMap = {};
+            const userCounts = {};
+
+            elements.forEach(el => {
+                if (el.tags) {
+                    for (let key in el.tags) {
+                        const val = el.tags[key];
+                        tagCounts[key] = (tagCounts[key] || 0) + 1;
+                        if (!tagValueMap[key]) {
+                            tagValueMap[key] = {};
+                        }
+                        tagValueMap[key][val] = (tagValueMap[key][val] || 0) + 1;
+                    }
+                }
+                if (el.user) {
+                    userCounts[el.user] = (userCounts[el.user] || 0) + 1;
+                }
+            });
+
+            currentTagValueMap = tagValueMap;
+
+            const sortedTags = Object.entries(tagCounts).sort((a, b) => b[1] - a[1]).slice(0, 15);
+            const sortedUsers = Object.entries(userCounts).sort((a, b) => b[1] - a[1]).slice(0, 15);
+
+            if (sortedUsers.length > 0) {
+                const kingName = sortedUsers[0][0];
+                const kingScore = sortedUsers[0][1];
+                kingBox.style.display = "block";
+                kingBox.innerHTML = "👑 <strong>King of " + activeUniversalID + ":</strong><br/><strong>" + kingName + "</strong> (" + kingScore + " objects)";
+            } else {
+                kingBox.style.display = "none";
+            }
+
+            renderTagsTable(sortedTags);
+            renderTable(usersContainer, "Top Contributors", ["Mapper", "Objects Touched"], sortedUsers);
+        }
+
+        function renderTagsTable(sortedTags) {
+            tagsContainer.innerHTML = '<h2>Most Frequent Tags</h2>';
+            if (sortedTags.length === 0) {
+                tagsContainer.innerHTML += '<p class="info">No detailed data found in this specific area.</p>';
+                return;
+            }
+            
+            let tableHtml = '<table><tr><th>Tag Key</th><th>Occurrences</th></tr>';
+            sortedTags.forEach(row => {
+                const tagKey = row[0];
+                const count = row[1];
+                tableHtml += `<tr><td>${escapeHtml(tagKey)}</td><td><span class="clickable-count" onclick="openValueModal('${escapeHtml(tagKey)}')">${count}</span></td></tr>`;
+            });
+            tableHtml += '</table>';
+            tagsContainer.innerHTML += tableHtml;
+        }
+
+        function renderTable(container, title, headers, dataRows) {
+            container.innerHTML = '<h2>' + title + '</h2>';
+            if (dataRows.length === 0) {
+                container.innerHTML += '<p class="info">No detailed data found in this specific area.</p>';
+                return;
+            }
+            
+            let tableHtml = '<table><tr><th>' + headers[0] + '</th><th>' + headers[1] + '</th></tr>';
+            dataRows.forEach(row => {
+                tableHtml += '<tr><td>' + escapeHtml(String(row[0])) + '</td><td>' + row[1] + '</td></tr>';
+            });
+            tableHtml += '</table>';
+            container.innerHTML += tableHtml;
+        }
+
+        function openValueModal(tagKey) {
+            const valuesObj = currentTagValueMap[tagKey] || {};
+            const sortedValues = Object.entries(valuesObj).sort((a, b) => b[1] - a[1]);
+            
+            modalTitle.textContent = `Values for "${tagKey}"`;
+            modalBody.innerHTML = '';
+
+            if (sortedValues.length === 0) {
+                modalBody.innerHTML = '<p class="info">No values found for this tag.</p>';
+            } else {
+                let tableHtml = '<table><tr><th>Value</th><th>Count</th></tr>';
+                sortedValues.forEach(([val, count]) => {
+                    tableHtml += `<tr><td>${escapeHtml(val)}</td><td>${count}</td></tr>`;
+                });
+                tableHtml += '</table>';
+                modalBody.innerHTML = tableHtml;
+            }
+
+            modalOverlay.style.display = 'flex';
+        }
+
+        function escapeHtml(str) {
+            return String(str)
+                .replace(/&/g, "&amp;")
+                .replace(/</g, "&lt;")
+                .replace(/>/g, "&gt;")
+                .replace(/"/g, "&quot;")
+                .replace(/'/g, "&#039;");
+        }
+
+        closeModalBtn.addEventListener('click', () => { modalOverlay.style.display = 'none'; });
+        modalOverlay.addEventListener('click', (e) => { if (e.target === modalOverlay) modalOverlay.style.display = 'none'; });
+
+        map.on('zoomend', checkZoomAndAnalyze);
+        map.on('moveend', checkZoomAndAnalyze);
+        analyzeBtn.addEventListener('click', fetchData);
+        window.addEventListener('resize', () => map.invalidateSize());
+        
+        checkZoomAndAnalyze();
+    </script>
+</body>
+</html>
